@@ -2,7 +2,10 @@ package services;
 
 import com.google.gson.JsonObject;
 import com.google.gson.JsonParser;
+import com.google.inject.Inject;
+import com.google.inject.Singleton;
 import errors.AzkabanApiException;
+import locks.ReadWriteLockProvider;
 import org.apache.http.HttpEntity;
 import org.apache.http.HttpResponse;
 import org.apache.http.NameValuePair;
@@ -31,6 +34,7 @@ import java.util.List;
 /**
  * Implementation of azkaban API
  */
+@Singleton
 public class AzkabanApiImplimentation implements AzkabanApi {
     /**
      * URL should be changed to the azkaban web server's url
@@ -43,87 +47,112 @@ public class AzkabanApiImplimentation implements AzkabanApi {
     private static final String HTTP_HEADER_XML_HTTP_REQUEST_HEADER_VALUE = "XMLHttpRequest";
     private static final String HTTP_HEADER_CONTENT_TYPE_HEADER_NAME = "Content-Type";
     private static final String HTTP_HEADER_CONTENT_TYPE_HEADER_VALUE = "application/x-www-form-urlencoded";
-    private static final String PROJECT_UPLOAD_ERROR_MESSAGE = "Error occurred while uploading the project to Azkaban";
-    private static final String PROJECT_DELETION_ERROR_MESSAGE = "Error occurred while deleting the project from Azkaban";
-    private static final String PROJECT_FLOW_CANCELLATION_ERROR_MESSAGE = "Error occurred while cancelling the flow of the project";
-    private static final String FLOW_FETCHING_ERROR_MESSAGE = "Error occurred while fetching the flows of the project";
-    private static final String EXECUTION_FETCHING_ERROR_MESSAGE = "Error occurred while fetching executions of the flow";
-    private static final String AZKABAN_RECORD_FETCH_ERROR_MESSAGE = "Error occurred while fetching records of the project";
-    private static final String FLOW_EXECUTION_ERROR_MESSAGE = "Error occurred while executing flows of the project";
-    private static final String SSL_ERROR_MESSAGE = "SSL authentication error";
-    private static final String PROJECT_ID_FETCH_ERROR_MESSAGE = "Error occurred while fetching the project id";
+    private static final String AUTHENTICATION_ERROR_MESSAGE = "Azkaban authentication error occurred!";
+    private static final String AZKABAN_PROJECT_CREATION_ERROR_MESSAGE = "Error occurred while creating Azkaban project on server side!";
+    private static final String SSL_CONNECTION_FAILURE_ERROR_MESSAGE = "SSL connection aborted!";
+    private static final String PROJECT_UPLOAD_ERROR_MESSAGE = "Error occurred while uploading the project to Azkaban server";
+    private static final String FLOW_SCHEDULE_ERROR_MESSAGE = "Error occurred while scheduling the flow/s of the project";
+    private static final String FLOW_CANCELLATION_ERROR_MESSAGE = "Error occurred while cancelling the project flow execution";
+    private static final String EXECUTION_FETCHING_ERROR_MESSAGE = "Error occurred while fetching executions for a particular flow";
+    private static final String FLOW_FETCHING_ERROR_MESSAGE = "Error occurred while fetching flows for a particular job";
+    private static final String UNSCHEDULING_ERROR_MESSAGE = "Error occurred while trying to unschedule a flow";
+    private static final String EXECUTE_FLOW_ERROR_MESSAGE = "Error occurred while trying to execute a flow";
+    private static final String SSL_ERROR_MESSAGE = "Error occurred while creating SSL context!";
+    private static final String ENCODE_NOT_SUPPORT_ERROR_MESSAGE = "Default encoding not supported!";
+    private static final String READ_ERROR_MESSAGE = "I/O error occurred while reading from stream";
     private String sessionId;
-    private String projectId = null;
-    private List<String> projects = new ArrayList<>();
+    private HttpPost httpPost;
+    private HttpGet httpGet;
+    private HttpResponse httpResponse;
+    private List<NameValuePair> urlParams;
+    @Inject
+    ReadWriteLockProvider readWriteLockProvider;
     @Override
-    public boolean authenticate(String username, String password) throws AzkabanApiException {
-        HttpPost httpPost = new HttpPost(URL);
+    public void authenticate(String username, String password) throws AzkabanApiException {
+        httpPost = new HttpPost(URL);
         httpPost.setHeader(HTTP_HEADER_XML_HTTP_REQUEST_HEADER_NAME, HTTP_HEADER_XML_HTTP_REQUEST_HEADER_VALUE);
         httpPost.setHeader(HTTP_HEADER_CONTENT_TYPE_HEADER_NAME, HTTP_HEADER_CONTENT_TYPE_HEADER_VALUE);
-        List<NameValuePair> urlParams = new ArrayList<>();
+        urlParams = new ArrayList<>();
         urlParams.add(new BasicNameValuePair("action", "login"));
         urlParams.add(new BasicNameValuePair("username", username));
         urlParams.add(new BasicNameValuePair("password", password));
-        HttpResponse httpResponse = postContent(httpPost, urlParams);
+        httpResponse = postContent(httpPost, urlParams);
         String result = getResponse(httpResponse);
-        if(!checkError(result).has("error"))
-            parseAuthenticationResponseJson(result);
-        return !checkError(result).has("error");
-    }
-
-    @Override
-    public boolean createProject(String name, String description) throws AzkabanApiException {
-        HttpPost post = new HttpPost(URL_MANAGER);
-        post.setHeader(HTTP_HEADER_XML_HTTP_REQUEST_HEADER_NAME, HTTP_HEADER_XML_HTTP_REQUEST_HEADER_VALUE);
-        post.setHeader(HTTP_HEADER_CONTENT_TYPE_HEADER_NAME, HTTP_HEADER_CONTENT_TYPE_HEADER_VALUE);
-        List<NameValuePair> urlParameters = new ArrayList<>();
-        urlParameters.add(new BasicNameValuePair("action", "create"));
-        urlParameters.add(new BasicNameValuePair("session.id", sessionId));
-        urlParameters.add(new BasicNameValuePair("name", name));
-        urlParameters.add(new BasicNameValuePair("description", description));
-        HttpResponse response = postContent(post, urlParameters);
-        String result = getResponse(response);
-        if(parseCreateResponseJson(result).get("status").getAsString().equalsIgnoreCase("success")){
-            projects.add(name);
+        if(checkError(result).has("error")) {
+            throw new AzkabanApiException(AUTHENTICATION_ERROR_MESSAGE);
         }
-        return response.getStatusLine().getStatusCode() == 200 && parseCreateResponseJson(result).get("status").getAsString().equalsIgnoreCase("success");
-    }
-
-    @Override
-    public boolean uploadProject(String name, String projectPath, String zipFileName) throws AzkabanApiException {
-        HttpPost post = new HttpPost(URL_MANAGER);
-        String filePath = projectPath.concat(zipFileName.concat(".zip"));
-        File file = new File(filePath);
-        HttpEntity httpEntity = MultipartEntityBuilder.create()
-                .addTextBody("session.id", sessionId)
-                .addTextBody("ajax","upload")
-                .addBinaryBody("file", file, ContentType.create("application/zip"), file.getName())
-                .addTextBody("project",name)
-                .build();
-        post.setEntity(httpEntity);
-        HttpResponse response = null;
         try {
-            response = sslauthenticatedclient().execute(post);
-        } catch (IOException e) {
-            throw new AzkabanApiException(PROJECT_UPLOAD_ERROR_MESSAGE, e);
+            readWriteLockProvider.acquireWriteLock();
+            this.sessionId = new JsonParser().parse(result).getAsJsonObject().get("session.id").getAsString();
+        } finally {
+            readWriteLockProvider.releaseWriteLock();
         }
-        String result = getResponse(response);
-        if(response.getStatusLine().getStatusCode() == 200 && parseCreateResponseJson(result).get("error") != null){
-            System.out.println(parseCreateResponseJson(result).get("error").getAsString());
-            return false;
-        }
-        projectId = parseCreateResponseJson(result).get("projectId").getAsString().trim();
-        return true;
     }
 
     @Override
-    public boolean scheduleFlow(String name, String projectId, String flowName, String scheduleTime, String scheduleDate, boolean isrecuring, String period) throws AzkabanApiException {
-        HttpPost httpPost = new HttpPost(URL_SCHEDULE);
+    public void createProject(String name, String description) throws AzkabanApiException {
+        httpPost = new HttpPost(URL_MANAGER);
         httpPost.setHeader(HTTP_HEADER_XML_HTTP_REQUEST_HEADER_NAME, HTTP_HEADER_XML_HTTP_REQUEST_HEADER_VALUE);
         httpPost.setHeader(HTTP_HEADER_CONTENT_TYPE_HEADER_NAME, HTTP_HEADER_CONTENT_TYPE_HEADER_VALUE);
-        List<NameValuePair> urlParams = new ArrayList<>();
+        urlParams = new ArrayList<>();
+        urlParams.add(new BasicNameValuePair("action", "create"));
+        try {
+            readWriteLockProvider.acquireReadLock();
+            urlParams.add(new BasicNameValuePair("session.id", sessionId));
+        } finally {
+            readWriteLockProvider.releaseReadLock();
+        }
+        urlParams.add(new BasicNameValuePair("name", name));
+        urlParams.add(new BasicNameValuePair("description", description));
+        httpResponse = postContent(httpPost, urlParams);
+        String result = getResponse(httpResponse);
+        if(!parseCreateResponseJson(result).get("status").getAsString().equalsIgnoreCase("success")){
+            throw new AzkabanApiException(AZKABAN_PROJECT_CREATION_ERROR_MESSAGE);
+        }
+    }
+
+    @Override
+    public void uploadProject(String name, String projectPath, String zipFileName) throws AzkabanApiException {
+        httpPost = new HttpPost(URL_MANAGER);
+        String filePath = projectPath.concat(zipFileName.concat(".zip"));
+        File file = new File(filePath);
+        try {
+            readWriteLockProvider.acquireReadLock();
+            HttpEntity httpEntity = MultipartEntityBuilder.create()
+                    .addTextBody("session.id", this.sessionId)
+                    .addTextBody("ajax","upload")
+                    .addBinaryBody("file", file, ContentType.create("application/zip"), file.getName())
+                    .addTextBody("project",name)
+                    .build();
+            httpPost.setEntity(httpEntity);
+        } finally {
+            readWriteLockProvider.releaseReadLock();
+        }
+        httpResponse = null;
+        try {
+            httpResponse = sslauthenticatedclient().execute(httpPost);
+        } catch (IOException e) {
+            throw new AzkabanApiException(SSL_CONNECTION_FAILURE_ERROR_MESSAGE, e);
+        }
+        String result = getResponse(httpResponse);
+        if(httpResponse.getStatusLine().getStatusCode() == 200 && parseCreateResponseJson(result).get("error") != null){
+            throw new AzkabanApiException(PROJECT_UPLOAD_ERROR_MESSAGE);
+        }
+    }
+
+    @Override
+    public void scheduleFlow(String name, String projectId, String flowName, String scheduleTime, String scheduleDate, boolean isrecuring, String period) throws AzkabanApiException {
+        httpPost = new HttpPost(URL_SCHEDULE);
+        httpPost.setHeader(HTTP_HEADER_XML_HTTP_REQUEST_HEADER_NAME, HTTP_HEADER_XML_HTTP_REQUEST_HEADER_VALUE);
+        httpPost.setHeader(HTTP_HEADER_CONTENT_TYPE_HEADER_NAME, HTTP_HEADER_CONTENT_TYPE_HEADER_VALUE);
+        urlParams = new ArrayList<>();
         urlParams.add(new BasicNameValuePair("ajax", "scheduleFlow"));
-        urlParams.add(new BasicNameValuePair("session.id", sessionId));
+        try {
+            readWriteLockProvider.acquireReadLock();
+            urlParams.add(new BasicNameValuePair("session.id", this.sessionId));
+        } finally {
+            readWriteLockProvider.releaseReadLock();
+        }
         urlParams.add(new BasicNameValuePair("projectName", name));
         urlParams.add(new BasicNameValuePair("projectId", projectId));
         urlParams.add(new BasicNameValuePair("flow", flowName));
@@ -133,131 +162,143 @@ public class AzkabanApiImplimentation implements AzkabanApi {
             urlParams.add(new BasicNameValuePair("is_recurring", "on"));
             urlParams.add(new BasicNameValuePair("period", period));
         }
-        HttpResponse httpResponse = postContent(httpPost, urlParams);
+        httpResponse = postContent(httpPost, urlParams);
         String result = getResponse(httpResponse);
-        if(parseCreateResponseJson(result).get("status").getAsString().equalsIgnoreCase("success")){
-            projects.add(name);
+        if(!parseCreateResponseJson(result).get("status").getAsString().equalsIgnoreCase("success")){
+            throw new AzkabanApiException(FLOW_SCHEDULE_ERROR_MESSAGE);
         }
-        return httpResponse.getStatusLine().getStatusCode() == 200 && parseCreateResponseJson(result).get("status").getAsString().equalsIgnoreCase("success");
     }
 
     @Override
-    public boolean deleteProject(String name) throws AzkabanApiException {
-        String url = URL_MANAGER+"?session.id="+ sessionId +"&delete=true&project="+name;
-        HttpGet get = new HttpGet(url);
-        get.setHeader(HTTP_HEADER_XML_HTTP_REQUEST_HEADER_NAME, HTTP_HEADER_XML_HTTP_REQUEST_HEADER_VALUE);
-        get.setHeader(HTTP_HEADER_CONTENT_TYPE_HEADER_NAME, HTTP_HEADER_CONTENT_TYPE_HEADER_VALUE);
-        HttpResponse httpResponse = null;
+    public void deleteProject(String name) throws AzkabanApiException {
         try {
-            httpResponse = sslauthenticatedclient().execute(get);
-        } catch (IOException e) {
-            throw new AzkabanApiException(PROJECT_DELETION_ERROR_MESSAGE, e);
+            readWriteLockProvider.acquireReadLock();
+            String url = URL_MANAGER+"?session.id="+ this.sessionId +"&delete=true&project="+name;
+            httpGet = new HttpGet(url);
+        } finally {
+            readWriteLockProvider.releaseReadLock();
         }
-        return httpResponse.getStatusLine().getStatusCode() == 200;
+        httpGet.setHeader(HTTP_HEADER_XML_HTTP_REQUEST_HEADER_NAME, HTTP_HEADER_XML_HTTP_REQUEST_HEADER_VALUE);
+        httpGet.setHeader(HTTP_HEADER_CONTENT_TYPE_HEADER_NAME, HTTP_HEADER_CONTENT_TYPE_HEADER_VALUE);
+        httpResponse = null;
+        try {
+            httpResponse = sslauthenticatedclient().execute(httpGet);
+        } catch (IOException e) {
+            throw new AzkabanApiException(SSL_CONNECTION_FAILURE_ERROR_MESSAGE, e);
+        }
     }
 
     @Override
-    public boolean cancelFlow(String execId) throws AzkabanApiException {
-        String url = URL_EXECUTOR+"?ajax=cancelFlow&session.id="+this.sessionId +"&execid="+execId;
-        HttpGet get = new HttpGet(url);
-        get.setHeader(HTTP_HEADER_XML_HTTP_REQUEST_HEADER_NAME, HTTP_HEADER_XML_HTTP_REQUEST_HEADER_VALUE);
-        get.setHeader(HTTP_HEADER_CONTENT_TYPE_HEADER_NAME, HTTP_HEADER_CONTENT_TYPE_HEADER_VALUE);
-        HttpResponse response = null;
+    public void cancelFlow(String execId) throws AzkabanApiException {
         try {
-            response = sslauthenticatedclient().execute(get);
-        } catch (IOException e) {
-            throw new AzkabanApiException(PROJECT_FLOW_CANCELLATION_ERROR_MESSAGE, e);
+            readWriteLockProvider.acquireReadLock();
+            String url = URL_EXECUTOR+"?ajax=cancelFlow&session.id="+this.sessionId +"&execid="+execId;
+            httpGet = new HttpGet(url);
+        } finally {
+            readWriteLockProvider.releaseReadLock();
         }
-        return response.getStatusLine().getStatusCode() == 200;
+        httpGet.setHeader(HTTP_HEADER_XML_HTTP_REQUEST_HEADER_NAME, HTTP_HEADER_XML_HTTP_REQUEST_HEADER_VALUE);
+        httpGet.setHeader(HTTP_HEADER_CONTENT_TYPE_HEADER_NAME, HTTP_HEADER_CONTENT_TYPE_HEADER_VALUE);
+        httpResponse = null;
+        try {
+            httpResponse = sslauthenticatedclient().execute(httpGet);
+        } catch (IOException e) {
+            throw new AzkabanApiException(SSL_CONNECTION_FAILURE_ERROR_MESSAGE, e);
+        }
+        if (httpResponse.getStatusLine().getStatusCode() != 200){
+            throw new AzkabanApiException(FLOW_CANCELLATION_ERROR_MESSAGE);
+        }
     }
 
     @Override
     public String fetchFlows(String name) throws AzkabanApiException {
-        String url = URL_MANAGER+"?session.id="+ sessionId +"&ajax=fetchprojectflows&project="+name;
-        HttpGet get = new HttpGet(url);
-        get.setHeader(HTTP_HEADER_XML_HTTP_REQUEST_HEADER_NAME, HTTP_HEADER_XML_HTTP_REQUEST_HEADER_VALUE);
-        get.setHeader(HTTP_HEADER_CONTENT_TYPE_HEADER_NAME, HTTP_HEADER_CONTENT_TYPE_HEADER_VALUE);
-        HttpResponse response = null;
         try {
-            response = sslauthenticatedclient().execute(get);
-        } catch (IOException e) {
-            throw new AzkabanApiException(FLOW_FETCHING_ERROR_MESSAGE, e);
+            readWriteLockProvider.acquireReadLock();
+            String url = URL_MANAGER+"?session.id="+ sessionId +"&ajax=fetchprojectflows&project="+name;
+            httpGet = new HttpGet(url);
+        } finally {
+            readWriteLockProvider.releaseReadLock();
         }
-        return getResponse(response);
+        httpGet.setHeader(HTTP_HEADER_XML_HTTP_REQUEST_HEADER_NAME, HTTP_HEADER_XML_HTTP_REQUEST_HEADER_VALUE);
+        httpGet.setHeader(HTTP_HEADER_CONTENT_TYPE_HEADER_NAME, HTTP_HEADER_CONTENT_TYPE_HEADER_VALUE);
+        httpResponse = null;
+        try {
+            httpResponse = sslauthenticatedclient().execute(httpGet);
+        } catch (IOException e) {
+            throw new AzkabanApiException(SSL_CONNECTION_FAILURE_ERROR_MESSAGE, e);
+        }
+        if (httpResponse.getStatusLine().getStatusCode() == 200){
+            return getResponse(httpResponse);
+        } else {
+            throw new AzkabanApiException(FLOW_FETCHING_ERROR_MESSAGE);
+        }
     }
 
     @Override
     public String fetchExecutions(String name, String flowId, int startIndex, int endIndex) throws AzkabanApiException {
-        String url = URL_MANAGER+"?session.id="+ sessionId +"&ajax=fetchFlowExecutions&project="+name+"&flow="+flowId+"&start="+startIndex+"&length="+endIndex;
-        HttpGet get = new HttpGet(url);
-        get.setHeader(HTTP_HEADER_XML_HTTP_REQUEST_HEADER_NAME, HTTP_HEADER_XML_HTTP_REQUEST_HEADER_VALUE);
-        get.setHeader(HTTP_HEADER_CONTENT_TYPE_HEADER_NAME, HTTP_HEADER_CONTENT_TYPE_HEADER_VALUE);
-        HttpResponse response = null;
         try {
-            response = sslauthenticatedclient().execute(get);
-        } catch (IOException e) {
-            throw new AzkabanApiException(EXECUTION_FETCHING_ERROR_MESSAGE, e);
+            readWriteLockProvider.acquireReadLock();
+            String url = URL_MANAGER+"?session.id="+ sessionId +"&ajax=fetchFlowExecutions&project="+name+"&flow="+flowId+"&start="+startIndex+"&length="+endIndex;
+            httpGet = new HttpGet(url);
+        } finally {
+            readWriteLockProvider.releaseReadLock();
         }
-        if (response.getStatusLine().getStatusCode() == 200){
-            return getResponse(response);
+        httpGet.setHeader(HTTP_HEADER_XML_HTTP_REQUEST_HEADER_NAME, HTTP_HEADER_XML_HTTP_REQUEST_HEADER_VALUE);
+        httpGet.setHeader(HTTP_HEADER_CONTENT_TYPE_HEADER_NAME, HTTP_HEADER_CONTENT_TYPE_HEADER_VALUE);
+        httpResponse = null;
+        try {
+            httpResponse = sslauthenticatedclient().execute(httpGet);
+        } catch (IOException e) {
+            throw new AzkabanApiException(SSL_CONNECTION_FAILURE_ERROR_MESSAGE, e);
+        }
+        if (httpResponse.getStatusLine().getStatusCode() == 200){
+            return getResponse(httpResponse);
         } else {
-            throw new AzkabanApiException(FLOW_EXECUTION_ERROR_MESSAGE);
+            throw new AzkabanApiException(EXECUTION_FETCHING_ERROR_MESSAGE);
         }
     }
 
     @Override
-    public boolean fetch(String name, String flowId, String operation, String ajaxParam) throws AzkabanApiException {
-        String url = URL + operation + "?session.id=" + this.sessionId + "&ajax=" + ajaxParam + "&project=" + name + "&flow=" + flowId;
-        HttpGet get = new HttpGet(url);
-        get.setHeader(HTTP_HEADER_XML_HTTP_REQUEST_HEADER_NAME, HTTP_HEADER_XML_HTTP_REQUEST_HEADER_VALUE);
-        get.setHeader(HTTP_HEADER_CONTENT_TYPE_HEADER_NAME, HTTP_HEADER_CONTENT_TYPE_HEADER_VALUE);
-        HttpResponse response = null;
+    public void unscheduleFlow(String scheduleId) throws AzkabanApiException {
+        httpPost = new HttpPost(URL_SCHEDULE);
+        httpPost.setHeader(HTTP_HEADER_XML_HTTP_REQUEST_HEADER_NAME, HTTP_HEADER_XML_HTTP_REQUEST_HEADER_VALUE);
+        httpPost.setHeader(HTTP_HEADER_CONTENT_TYPE_HEADER_NAME, HTTP_HEADER_CONTENT_TYPE_HEADER_VALUE);
+        urlParams = new ArrayList<>();
+        urlParams.add(new BasicNameValuePair("action", "removeSched"));
         try {
-            response = sslauthenticatedclient().execute(get);
-        } catch (IOException e) {
-            throw new AzkabanApiException(AZKABAN_RECORD_FETCH_ERROR_MESSAGE, e);
-        }
-        if (ajaxParam.equalsIgnoreCase("fetchflowgraph")) {
-            System.out.println(getResponse(response));
-        }
-        return response.getStatusLine().getStatusCode() == 200;
-    }
-    @Override
-    public boolean unscheduleFlow(String scheduleId) throws AzkabanApiException {
-        HttpPost post = new HttpPost(URL_SCHEDULE);
-        post.setHeader(HTTP_HEADER_XML_HTTP_REQUEST_HEADER_NAME, HTTP_HEADER_XML_HTTP_REQUEST_HEADER_VALUE);
-        post.setHeader(HTTP_HEADER_CONTENT_TYPE_HEADER_NAME, HTTP_HEADER_CONTENT_TYPE_HEADER_VALUE);
-        List<NameValuePair> urlParameters = new ArrayList<>();
-        urlParameters.add(new BasicNameValuePair("action", "removeSched"));
-        urlParameters.add(new BasicNameValuePair("session.id", sessionId));
-        urlParameters.add(new BasicNameValuePair("scheduleId", scheduleId));
-        HttpResponse response = postContent(post, urlParameters);
-        String result = getResponse(response);
+            readWriteLockProvider.acquireReadLock();
+            urlParams.add(new BasicNameValuePair("session.id", this.sessionId));
+        } finally {
+            readWriteLockProvider.releaseReadLock();
+        }        urlParams.add(new BasicNameValuePair("scheduleId", scheduleId));
+        httpResponse = postContent(httpPost, urlParams);
+        String result = getResponse(httpResponse);
         System.out.println(result);
-        if(parseCreateResponseJson(result).get("status").getAsString().equalsIgnoreCase("success")){
-            System.out.println("success");
+        if(!parseCreateResponseJson(result).get("status").getAsString().equalsIgnoreCase("success")){
+            throw new AzkabanApiException(UNSCHEDULING_ERROR_MESSAGE);
         }
-        return response.getStatusLine().getStatusCode() == 200 && parseCreateResponseJson(result).get("status").getAsString().equalsIgnoreCase("success");
     }
 
     @Override
-    public boolean executeFlow(String name, String flowId) throws AzkabanApiException {
-        String url = URL_EXECUTOR+"?session.id="+this.sessionId +"&ajax=executeFlow&project="+name+"&flow="+flowId;
-        HttpGet get = new HttpGet(url);
-        get.setHeader(HTTP_HEADER_XML_HTTP_REQUEST_HEADER_NAME, HTTP_HEADER_XML_HTTP_REQUEST_HEADER_VALUE);
-        get.setHeader(HTTP_HEADER_CONTENT_TYPE_HEADER_NAME, HTTP_HEADER_CONTENT_TYPE_HEADER_VALUE);
-        HttpResponse response = null;
+    public void executeFlow(String name, String flowId) throws AzkabanApiException {
         try {
-            response = sslauthenticatedclient().execute(get);
-        } catch (IOException e) {
-            throw new AzkabanApiException(FLOW_EXECUTION_ERROR_MESSAGE, e);
+            readWriteLockProvider.acquireReadLock();
+            String url = URL_EXECUTOR+"?session.id="+this.sessionId +"&ajax=executeFlow&project="+name+"&flow="+flowId;
+            httpGet = new HttpGet(url);
+        } finally {
+            readWriteLockProvider.releaseReadLock();
         }
-        return response.getStatusLine().getStatusCode() == 200;
-    }
-
-    @Override
-    public boolean isAuthenticated() {
-        return (this.sessionId != null);
+        httpGet.setHeader(HTTP_HEADER_XML_HTTP_REQUEST_HEADER_NAME, HTTP_HEADER_XML_HTTP_REQUEST_HEADER_VALUE);
+        httpGet.setHeader(HTTP_HEADER_CONTENT_TYPE_HEADER_NAME, HTTP_HEADER_CONTENT_TYPE_HEADER_VALUE);
+        httpResponse = null;
+        try {
+            httpResponse = sslauthenticatedclient().execute(httpGet);
+        } catch (IOException e) {
+            throw new AzkabanApiException(SSL_CONNECTION_FAILURE_ERROR_MESSAGE, e);
+        }
+        if (httpResponse.getStatusLine().getStatusCode() != 200){
+            throw new AzkabanApiException(EXECUTE_FLOW_ERROR_MESSAGE);
+        }
     }
 
     private JsonObject checkError(String result){
@@ -269,13 +310,6 @@ public class AzkabanApiImplimentation implements AzkabanApi {
     private JsonObject parseCreateResponseJson(String result){
         JsonParser parser = new JsonParser();
         return parser.parse(result).getAsJsonObject();
-    }
-
-    public JsonObject parseAuthenticationResponseJson(String result){
-        JsonParser parser = new JsonParser();
-        JsonObject object = parser.parse(result).getAsJsonObject();
-        this.sessionId = object.get("session.id").getAsString();
-        return object;
     }
 
     private HttpClient sslauthenticatedclient() throws AzkabanApiException {
@@ -309,37 +343,25 @@ public class AzkabanApiImplimentation implements AzkabanApi {
 
     }
 
-    private HttpResponse postContent(HttpPost post,List<NameValuePair> urlParameters) throws AzkabanApiException {
+    private HttpResponse postContent(HttpPost httpPost,List<NameValuePair> urlParams) throws AzkabanApiException {
         try {
-            post.setEntity(new UrlEncodedFormEntity(urlParameters));
-            return  sslauthenticatedclient().execute(post);
-        } catch (UnsupportedEncodingException e) {
-            throw new AzkabanApiException(SSL_ERROR_MESSAGE, e);
-        } catch (ClientProtocolException e) {
-            throw new AzkabanApiException(SSL_ERROR_MESSAGE, e);
+            httpPost.setEntity(new UrlEncodedFormEntity(urlParams));
+            return  sslauthenticatedclient().execute(httpPost);
         } catch (IOException e) {
-            throw new AzkabanApiException(SSL_ERROR_MESSAGE, e);
+            throw new AzkabanApiException(SSL_CONNECTION_FAILURE_ERROR_MESSAGE, e);
         }
     }
 
-    private String getResponse(HttpResponse response) throws AzkabanApiException {
-        BufferedReader rd = null;
-        try {
-            rd = new BufferedReader(new InputStreamReader(response.getEntity().getContent()));
-        } catch (IOException e) {
-            throw new AzkabanApiException(SSL_ERROR_MESSAGE, e);
-        }
-
+    private String getResponse(HttpResponse httpResponse) throws AzkabanApiException {
         StringBuffer result = new StringBuffer();
-        String line = "";
+        String line;
         try {
-            while ((line = rd.readLine()) != null) {
+            while ((line = new BufferedReader(new InputStreamReader(httpResponse.getEntity().getContent())).readLine()) != null) {
                 result.append(line);
             }
         } catch (IOException e) {
-            throw new AzkabanApiException(SSL_ERROR_MESSAGE, e);
+            throw new AzkabanApiException(READ_ERROR_MESSAGE, e);
         }
-
         return result.toString();
     }
 }

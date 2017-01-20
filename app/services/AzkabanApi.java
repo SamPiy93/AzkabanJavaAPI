@@ -7,27 +7,23 @@ import errors.AzkabanApiException;
  */
 public interface AzkabanApi {
 
-    boolean authenticate(String username, String password) throws AzkabanApiException;
+    void authenticate(String username, String password) throws AzkabanApiException;
 
-    boolean createProject(String name, String description) throws AzkabanApiException;
+    void createProject(String name, String description) throws AzkabanApiException;
 
-    boolean uploadProject(String name, String projectPath, String zipFileName) throws AzkabanApiException;
+    void uploadProject(String name, String projectPath, String zipFileName) throws AzkabanApiException;
 
-    boolean scheduleFlow(String name, String projectId, String flowName, String scheduleTime, String scheduleDate, boolean isrecuring, String period) throws AzkabanApiException;
+    void scheduleFlow(String name, String projectId, String flowName, String scheduleTime, String scheduleDate, boolean isrecuring, String period) throws AzkabanApiException;
 
-    boolean deleteProject(String name) throws AzkabanApiException;
+    void deleteProject(String name) throws AzkabanApiException;
 
-    boolean cancelFlow(String execId) throws AzkabanApiException;
+    void cancelFlow(String execId) throws AzkabanApiException;
 
     String fetchFlows(String name) throws AzkabanApiException;
 
     String fetchExecutions(String name, String flowId, int startIndex, int endIndex) throws AzkabanApiException;
 
-    boolean fetch(String name, String flowId, String operation, String ajaxParam) throws AzkabanApiException;
+    void unscheduleFlow(String scheduleId) throws AzkabanApiException;
 
-    boolean unscheduleFlow(String scheduleId) throws AzkabanApiException;
-
-    boolean executeFlow(String name, String flowId) throws AzkabanApiException;
-
-    boolean isAuthenticated();
+    void executeFlow(String name, String flowId) throws AzkabanApiException;
 }
