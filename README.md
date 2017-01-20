@@ -1,7 +1,7 @@
 # AzkabanJavaAPI
 Java API for Azkaban job scheduler.
 Implementation for the following methods are included in this project. The default AJAX API methods has been replaced in this.
-
+Default AJAX API - http://azkaban.github.io/azkaban/docs/latest/#ajax-api
 authenticate(String username, String password)
 
 void createProject(String name, String description)
