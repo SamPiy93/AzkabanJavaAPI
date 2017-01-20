@@ -39,7 +39,7 @@ public class AzkabanApiImplimentation implements AzkabanApi {
     /**
      * URL should be changed to the azkaban web server's url
      */
-    private static final String URL = "https://10.101.16.24:8043/";
+    private static final String URL = "https://localhost:8043/";
     private static final String URL_MANAGER = URL+"manager";
     private static final String URL_SCHEDULE = URL+"schedule";
     private static final String URL_EXECUTOR = URL+"executor";
